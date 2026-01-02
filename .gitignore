@@ -1,0 +1,28 @@
+# Large VM files - DO NOT commit to Git
+*.qcow2
+*.iso
+
+# Logs
+*.log
+deploy*.log
+test*.log
+
+# Temporary state files
+CURRENT-STATE.md
+NEXT-STEPS.md
+TEST-RESULTS.md
+
+# Backup files
+*.bak
+*backup*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
