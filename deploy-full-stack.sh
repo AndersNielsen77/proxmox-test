@@ -12,10 +12,9 @@ SSHOPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel
 echo -e "${GREEN}====== KFT Infrastructure Deployment ======${NC}"
 echo ""
 
-# Step 1: Clean start
-echo -e "${YELLOW}[1/9] Preparing clean VM environment...${NC}"
+# Step 1: Clean start (skip snapshot restore - it's corrupted)
+echo -e "${YELLOW}[1/9] Preparing VM environment...${NC}"
 ./stop-vm.sh >/dev/null 2>&1 || true
-qemu-img snapshot -a clean-with-template proxmox-test.qcow2
 ./start-vm.sh
 echo "Waiting for VM to boot..."
 sleep 45
@@ -30,6 +29,43 @@ for i in {1..5}; do
   echo "  Attempt $i/5..."
   sleep 5
 done
+
+# Step 2.3: Enable VLAN support
+echo -e "${YELLOW}Enabling VLAN support...${NC}"
+ssh $SSHOPTS root@localhost 'modprobe 8021q 2>/dev/null && echo 1 > /sys/class/net/vmbr0/bridge/vlan_filtering 2>/dev/null || true'
+echo -e "${GREEN}✓ VLAN support enabled${NC}"
+
+# Step 2.5: Clean up any containers/VMs from snapshot
+echo -e "${YELLOW}Cleaning up existing resources from snapshot...${NC}"
+ssh $SSHOPTS root@localhost <<'EOFCLEANUP'
+echo "Checking for existing resources..."
+pct list 2>/dev/null || true
+qm list 2>/dev/null || true
+
+echo "Force destroying any existing containers/VMs..."
+for id in 100 102 106 107 109 115; do
+  pct unlock $id 2>/dev/null || true
+  pct stop $id 2>/dev/null || true
+  pct destroy $id --purge --force 2>/dev/null || true
+  rm -f /etc/pve/lxc/${id}.conf 2>/dev/null || true
+  rm -f /run/lock/lxc/pve-config-${id}.lock 2>/dev/null || true
+done
+
+qm unlock 300 2>/dev/null || true
+qm stop 300 2>/dev/null || true
+qm destroy 300 --purge 2>/dev/null || true
+rm -f /etc/pve/qemu-server/300.conf 2>/dev/null || true
+rm -f /run/lock/qemu-server/lock-300.conf 2>/dev/null || true
+
+# Restart Proxmox services to clear any cached state
+systemctl restart pvedaemon 2>/dev/null || true
+sleep 3
+
+echo "Cleanup complete - verifying..."
+pct list 2>/dev/null || true
+qm list 2>/dev/null || true
+EOFCLEANUP
+echo -e "${GREEN}✓ Cleanup complete${NC}"
 
 # Step 3: Configure repositories and install tools
 echo -e "${YELLOW}[3/9] Installing Terraform and Ansible...${NC}"
@@ -56,6 +92,7 @@ echo -e "${GREEN}✓ Tools installed${NC}"
 
 # Step 4: Copy infrastructure code
 echo -e "${YELLOW}[4/9] Copying KFT-Infra code...${NC}"
+ssh $SSHOPTS root@localhost 'rm -rf /root/kft-infra'
 scp -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q -r /home/smd/Documents/KFT-Infra root@localhost:/root/kft-infra
 echo -e "${GREEN}✓ Code copied${NC}"
 
@@ -64,18 +101,13 @@ echo -e "${YELLOW}[5/9] Deploying containers with Terraform...${NC}"
 ssh $SSHOPTS root@localhost <<'EOFTERRAFORM'
 cd /root/kft-infra/terraform
 
-# Backup production configs
-mv containers.tf containers.tf.prod 2>/dev/null || true
-mv vms.tf vms.tf.prod 2>/dev/null || true
-mv outputs.tf outputs.tf.prod 2>/dev/null || true
+# Clean up any stale Terraform state from snapshot
+rm -rf .terraform terraform.tfstate terraform.tfstate.backup .terraform.lock.hcl 2>/dev/null || true
 
-# Use test config (already copied)
-cp containers-test-all.tf containers.tf
-
-# Initialize and apply
+# Initialize and apply with dev environment
 terraform init -no-color >/dev/null 2>&1
-echo "Deploying 5 containers (this may take 2-3 minutes)..."
-terraform apply -var-file=terraform-dev.tfvars -auto-approve -no-color
+echo "Deploying containers and VMs one at a time (this may take 3-5 minutes)..."
+terraform apply -var-file=dev.tfvars -auto-approve -no-color
 EOFTERRAFORM
 
 if [ $? -ne 0 ]; then
