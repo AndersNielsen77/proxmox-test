@@ -64,6 +64,9 @@ Errors fail the run; partial failures are not reported as successful deployments
 
 Evidence is in `.runtime/integration.log`, `ansible-first.log`, `ansible-second.log`
 and `integration-results.json`. Review second-run changed/failed counts for idempotence.
+The agreed 1:1 scope is KFT’s [exact live inventory and drift checks](https://github.com/AndersNielsen77/KFT-Infra/blob/maintenance/home-ovh-refresh/inventory/fleet/README.md).
+This lab remains an independent five-service role fixture; monitoring services can be
+tested here even though the home monitoring guests were deliberately retired.
 The runner does not reproduce real hardware/USB passthrough, TrueNAS pools, UniFi
 fresh installation, production backups, OVH websites or a full production restore.
 Those require separate ownership and validation. See [actual results and limits](docs/integration-2026-10-03.md).
