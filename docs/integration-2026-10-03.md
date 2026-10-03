@@ -31,4 +31,5 @@ Production guests were not deployed/restarted by these tests. No production USB,
 TrueNAS pool/disk/restore, fresh UniFi installation, GUI dashboard rendering, HA
 onboarding, Homarr user workflow or complete fleet recovery was verified. See KFT's
 [production coverage report](https://github.com/AndersNielsen77/KFT-Infra/blob/maintenance/home-ovh-refresh/docs/guest-coverage-and-integration-2026-10-03.md)
-for all 22 running production guests and remaining issues.
+for the initial 22-guest audit, final 20-guest inventory after external removals,
+and remaining issues.
