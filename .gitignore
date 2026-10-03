@@ -26,3 +26,7 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# Private local lab: keys, credentials, disks, logs and generated inventory
+.runtime/
+__pycache__/
