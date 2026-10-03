@@ -1,223 +1,99 @@
-# Proxmox Test Environment
+# Proxmox test environment
 
-Local nested Proxmox VE installation for testing infrastructure code before deploying to production.
+A dedicated local QEMU/KVM Proxmox lab for [KFT-Infra](https://github.com/AndersNielsen77/KFT-Infra).
+The lab uses a verified Debian 13 cloud image and the official signed Proxmox packages,
+with a Proxmox kernel. No ISO installation or old VM disk/snapshot is required.
 
-This repository contains scripts to manage a QEMU/KVM-based Proxmox VE 9.1 test environment. Perfect for testing [KFT-Infra](https://github.com/AndersNielsen77/KFT-Infra) deployments safely before production.
+The previous scripts used shared passwords, broad process kills, production guest IDs,
+manual network rewrites and unconditional cleanup. These entry points now operate only
+on the new dedicated `.runtime/` lab; legacy disks are never selected automatically.
 
-## Prerequisites
+## Requirements
 
-**Required Software:**
-- QEMU/KVM with virtualization support
-- SSH client
-- VNC viewer (optional, for console access)
+Linux x86_64, writable `/dev/kvm` with nested virtualization, Python 3.11+, QEMU,
+`qemu-img`, `xorriso`, OpenSSH, internet access, 8 GiB spare RAM and about 20 GiB
+actual disk space (60 GiB sparse guest disk). No host administrator settings are changed.
+The five test service containers share the lab VM's resources. KFT's Python/Ansible/
+Terraform dependencies and this repo's `requirements.txt` must be installed in the
+controller environment. Keep both repositories side by side or pass `--repo PATH`.
 
-**Required Downloads (not in Git):**
-- [Proxmox VE 9.1 ISO](https://www.proxmox.com/en/downloads) (~1.8GB) - Place in this directory
-- VM disk image: Either create new or use existing `proxmox-test.qcow2`
-
-## Quick Start
-
-```bash
-# Clone this repository
-git clone https://github.com/AndersNielsen77/proxmox-test.git
-cd proxmox-test
-
-# Download Proxmox VE ISO (if needed)
-wget https://enterprise.proxmox.com/iso/proxmox-ve_9.1-1.iso
-
-# Start the VM
-./start-vm.sh
-
-# Access Proxmox
-# Web UI: https://localhost:8006 (root@pam / test1234)
-# SSH: ssh -p 2222 root@localhost
-```
-
-## Quick Reference
-
-| Item | Value |
-|------|-------|
-| **Web UI** | https://localhost:8006 |
-| **SSH** | `ssh -p 2222 root@localhost` |
-| **VNC** | `localhost:5901` |
-| **Credentials** | `root@pam` / `test1234` |
-| **Node Name** | `pve` |
-
-## Files
-
-```
-proxmox-test/
-├── start-vm.sh              # Start the Proxmox VM
-├── stop-vm.sh               # Stop the VM gracefully
-├── revert-to-clean.sh       # Restore to clean snapshot
-├── deploy-full-stack.sh     # Full KFT-Infra deployment
-├── .gitignore               # Excludes large VM files
-└── README.md                # This file
-
-Not in Git (large files):
-├── proxmox-ve_9.1-1.iso     # Proxmox installer (~1.8GB)
-└── proxmox-test.qcow2       # VM disk image (~20GB)
-```
-
-## Usage
-
-### Starting the VM
+## Create and start
 
 ```bash
+python3 lab.py prepare
 ./start-vm.sh
+python3 lab.py status
 ```
 
-Wait ~30 seconds for boot, then access via web UI or SSH.
+First bootstrap installs Proxmox and reboots **only the dedicated lab VM**. It can take
+several minutes; `lab.py status` shows progress, then the installed Proxmox version.
+The SSH key and API token are generated for this lab. There is no shared/default password.
+`.runtime/` is private (0700) and ignored, including images, keys, known hosts,
+generated credentials/inventory and logs. Never commit or reuse those credentials.
 
-### Stopping the VM
+| Interface | Address |
+|---|---|
+| Proxmox API | https://127.0.0.1:18006 |
+| SSH | 127.0.0.1:12222, via `python3 lab.py ssh COMMAND` |
+| Internal service network | 10.73.0.0/24, NAT through the lab VM |
+
+Port forwards bind only loopback. Lab firewall rules block access to the home,
+Tailscale and other private production networks, retaining the lab subnet and QEMU
+DNS/NAT subnet. The API uses its local self-signed certificate. The lab uses SSH keys
+and an API token; interactive root password login is not configured by default.
+
+The bootstrap follows [Proxmox's Debian 13 installation workflow](https://pve.proxmox.com/wiki/Install_Proxmox_VE_on_Debian_13_Trixie),
+using its signed no-subscription repository. Cloud-image download checksums are verified
+against [Debian's published SHA512 manifest](https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS).
+
+## Real integration test
+
+With KFT-Infra's validated controller environment active:
+
+```bash
+pip install -r requirements.txt
+./deploy-full-stack.sh --repo ../KFT-Infra
+```
+
+The runner verifies `pve-test` and its bootstrap marker, then uses KFT's separate
+`terraform/test/` root, fixed loopback API endpoint, dedicated guest IDs **901–905**
+and **10.73.0.11–15**. It never invokes the home or OVH Terraform roots. It provisions
+Home Assistant, AdGuard, Homarr, Grafana and Prometheus, installs guest SSH access
+using only the lab public key, runs the actual KFT service roles twice, and probes them.
+Errors fail the run; partial failures are not reported as successful deployments.
+
+Evidence is in `.runtime/integration.log`, `ansible-first.log`, `ansible-second.log`
+and `integration-results.json`. Review second-run changed/failed counts for idempotence.
+The agreed 1:1 scope is KFT’s [exact live inventory and drift checks](https://github.com/AndersNielsen77/KFT-Infra/blob/maintenance/home-ovh-refresh/inventory/fleet/README.md).
+This lab remains an independent five-service role fixture; monitoring services can be
+tested here even though the home monitoring guests were deliberately retired.
+The runner does not reproduce real hardware/USB passthrough, TrueNAS pools, UniFi
+fresh installation, production backups, OVH websites or a full production restore.
+Those require separate ownership and validation. See [actual results and limits](docs/integration-2026-10-03.md).
+
+## Stop and snapshots
 
 ```bash
 ./stop-vm.sh
+python3 lab.py snapshot kft-full-stack
+python3 lab.py start
+# Explicitly restore a snapshot on this dedicated disk only:
+./revert-to-clean.sh kft-full-stack
 ```
 
-Gracefully shuts down Proxmox and stops the VM.
+Stop sends ACPI powerdown over the dedicated QMP socket and waits for graceful shutdown.
+It verifies the recorded PID belongs to this exact QEMU VM; there is no `pkill` or force
+kill fallback. Snapshot operations require the VM to be stopped. Restore changes only
+the dedicated lab disk and must name a snapshot explicitly. Test containers have boot
+startup disabled; re-run the integration workflow when restarting a stopped lab.
 
-### Reverting to Clean State
-
-After testing, restore to a clean Proxmox installation:
+## Script checks
 
 ```bash
-./revert-to-clean.sh
+python3 -m unittest discover -s tests -v
+bash -n *.sh scripts/bootstrap-proxmox.sh
 ```
 
-This will:
-1. Stop the VM
-2. Restore the `clean-with-template` snapshot
-3. Restart the VM
-
-**Clean state includes:**
-- Fresh Proxmox 9.1 installation
-- Debian 12 template pre-downloaded
-- No containers or VMs deployed
-
-### Full Stack Deployment
-
-Deploy complete KFT-Infra with one command:
-
-```bash
-./deploy-full-stack.sh
-```
-
-This will:
-1. Revert to clean snapshot
-2. Install Terraform and Ansible in the VM
-3. Deploy all 5 containers (Home Assistant, AdGuard, Homarr, Grafana, Prometheus)
-4. Configure services with Ansible
-5. Create final snapshot
-
-See [KFT-Infra](https://github.com/AndersNielsen77/KFT-Infra) for manual deployment steps.
-
-## Snapshots
-
-The VM uses QEMU snapshots for instant rollback:
-
-| Snapshot Name | Description |
-|---------------|-------------|
-| `clean-with-template` | Fresh Proxmox + Debian 12 template |
-| `kft-full-stack` | Full KFT-Infra deployment (optional) |
-
-### Managing Snapshots
-
-```bash
-# List all snapshots
-qemu-img snapshot -l proxmox-test.qcow2
-
-# Create new snapshot
-./stop-vm.sh
-qemu-img snapshot -c my-snapshot proxmox-test.qcow2
-./start-vm.sh
-
-# Restore snapshot
-./stop-vm.sh
-qemu-img snapshot -a snapshot-name proxmox-test.qcow2
-./start-vm.sh
-```
-
-## Network Configuration
-
-- **Type:** User-mode networking (NAT)
-- **Port Forwards:**
-  - Host `8006` → VM `8006` (Proxmox Web UI)
-  - Host `2222` → VM `22` (SSH)
-- **Container Network:** Containers get DHCP addresses on `vmbr0`
-
-## Integration with KFT-Infra
-
-This test environment is designed to work with [KFT-Infra](https://github.com/AndersNielsen77/KFT-Infra).
-
-**Test environment configuration:**
-```hcl
-# terraform/terraform-dev.tfvars
-proxmox_endpoint = "https://localhost:8006"
-proxmox_username = "root@pam"
-proxmox_password = "test1234"
-node_name        = "pve"
-```
-
-## Troubleshooting
-
-### VM won't start
-
-```bash
-# Kill any existing QEMU instances
-pkill qemu-system-x86_64
-
-# Try starting again
-./start-vm.sh
-```
-
-### Can't connect to web UI
-
-```bash
-# Verify SSH works first
-ssh -p 2222 root@localhost "pveversion"
-
-# Check Proxmox web service
-ssh -p 2222 root@localhost "systemctl status pveproxy"
-```
-
-### SSH host key changed errors
-
-The VM regenerates SSH keys on snapshot restore. Add to `~/.ssh/config`:
-
-```
-Host proxmox-test
-    HostName localhost
-    Port 2222
-    User root
-    StrictHostKeyChecking no
-    UserKnownHostsFile /dev/null
-    LogLevel ERROR
-```
-
-Then use: `ssh proxmox-test`
-
-## Development Workflow
-
-1. **Make changes** to KFT-Infra Terraform/Ansible code
-2. **Start test VM**: `./start-vm.sh`
-3. **Deploy to test**: Use KFT-Infra with `terraform-dev.tfvars`
-4. **Verify functionality** in test environment
-5. **Revert to clean**: `./revert-to-clean.sh`
-6. **Repeat** until confident
-7. **Deploy to production** with production credentials
-
-## Why This Exists
-
-- **Safe Testing**: Break things without affecting production
-- **Fast Iteration**: Snapshot rollback in seconds
-- **Isolated Environment**: Completely separate from production
-- **Reproducible**: Consistent test environment every time
-
-## License
-
-MIT License - See LICENSE file for details
-
-## Related Projects
-
-- [KFT-Infra](https://github.com/AndersNielsen77/KFT-Infra) - Infrastructure as Code for home lab deployment
+These test process ownership, refusal to overwrite existing disks, reuse of a running
+lab without killing it, and loopback-only forwards. They do not replace the real
+Terraform/Ansible installation test.
